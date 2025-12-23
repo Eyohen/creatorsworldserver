@@ -1,0 +1,37 @@
+name: Deploy Node App to Azure  # Changed name
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18.x'
+    
+    - name: npm install
+      run: npm install
+    
+    - name: 'Deploy to Azure Web App'
+      uses: azure/webapps-deploy@v3
+      with:
+        app-name: 'coinley-server-prod'
+        publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+        package: '.'
+
+    - name: Debug if failed
+      if: failure()
+      run: |
+        echo "Deployment failed. Checking configuration..."
+        echo "App name check: coinley-server-prod"
+        echo "Package location: ."
+        echo "Secret exists: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE != '' }}"

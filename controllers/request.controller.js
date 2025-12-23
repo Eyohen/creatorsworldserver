@@ -1,0 +1,362 @@
+const db = require('../models');
+const { CollaborationRequest, RequestNegotiation, Creator, Brand, User, RateCard, Contract, Conversation } = db;
+
+// Create request (Brand)
+exports.createRequest = async (req, res) => {
+  try {
+    const brand = req.brand;
+    const data = req.body;
+
+    // Check usage limits (optional - skip if no limit set)
+    // Tier-based limits could be implemented here in the future
+
+    // Generate unique reference number
+    const referenceNumber = CollaborationRequest.generateReferenceNumber();
+
+    // Map frontend fields to model fields
+    const request = await CollaborationRequest.create({
+      referenceNumber,
+      brandId: brand.id,
+      creatorId: data.creatorId,
+      // Map campaignTitle -> title, campaignBrief -> description
+      title: data.campaignTitle || data.title,
+      description: data.campaignBrief || data.description,
+      contentRequirements: data.requirements,
+      // Budget mapping
+      proposedBudget: data.budgetAmount || data.proposedBudget,
+      // Timeline mapping
+      proposedStartDate: data.startDate,
+      proposedEndDate: data.endDate,
+      draftDeadline: data.contentDeadline,
+      // Platform - default to common platforms if not specified
+      targetPlatforms: data.targetPlatforms || ['instagram'],
+      // Optional fields
+      hashtags: data.hashtags || [],
+      mentions: data.mentions || [],
+      deliverables: data.selectedServices || data.deliverables || [],
+      brandNotes: data.brandNotes,
+      status: 'pending'
+    });
+
+    // Create conversation for this request
+    await Conversation.create({
+      requestId: request.id,
+      creatorId: data.creatorId,
+      brandId: brand.id
+    });
+
+    // Increment active campaigns count
+    await brand.increment('activeCampaignsCount');
+
+    // TODO: Send notification to creator
+
+    res.status(201).json({ success: true, data: request });
+  } catch (error) {
+    console.error('Create request error:', error);
+    res.status(500).json({ success: false, message: 'Failed to create request' });
+  }
+};
+
+// Get brand's sent requests
+exports.getBrandRequests = async (req, res) => {
+  try {
+    const { status, page = 1, limit = 20 } = req.query;
+    const where = { brandId: req.brand.id };
+    if (status) where.status = status;
+
+    const requests = await CollaborationRequest.findAndCountAll({
+      where,
+      include: [{ model: Creator, as: 'creator', attributes: ['id', 'displayName', 'profileImage', 'tier'] }],
+      limit: parseInt(limit),
+      offset: (page - 1) * limit,
+      order: [['createdAt', 'DESC']]
+    });
+
+    res.json({
+      success: true,
+      data: {
+        requests: requests.rows,
+        pagination: { page: parseInt(page), limit: parseInt(limit), total: requests.count, totalPages: Math.ceil(requests.count / limit) }
+      }
+    });
+  } catch (error) {
+    console.error('Get brand requests error:', error);
+    res.status(500).json({ success: false, message: 'Failed to get requests' });
+  }
+};
+
+// Get brand request detail
+exports.getBrandRequestDetail = async (req, res) => {
+  try {
+    const request = await CollaborationRequest.findOne({
+      where: { id: req.params.id, brandId: req.brand.id },
+      include: [
+        { model: Creator, as: 'creator' },
+        { model: Contract, as: 'contract' },
+        { model: RequestNegotiation, as: 'negotiations', order: [['createdAt', 'ASC']] }
+      ]
+    });
+    if (!request) return res.status(404).json({ success: false, message: 'Not found' });
+    res.json({ success: true, data: request });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to get request' });
+  }
+};
+
+// Cancel request
+exports.cancelRequest = async (req, res) => {
+  try {
+    const request = await CollaborationRequest.findOne({ where: { id: req.params.id, brandId: req.brand.id } });
+    if (!request) return res.status(404).json({ success: false, message: 'Not found' });
+    if (!['pending', 'viewed', 'negotiating'].includes(request.status)) {
+      return res.status(400).json({ success: false, message: 'Cannot cancel at this stage' });
+    }
+    await request.update({ status: 'cancelled', cancelledAt: new Date(), cancelledBy: 'brand' });
+    await req.brand.decrement('activeCampaigns');
+    res.json({ success: true, message: 'Request cancelled' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to cancel' });
+  }
+};
+
+// Approve content
+exports.approveContent = async (req, res) => {
+  try {
+    const request = await CollaborationRequest.findOne({ where: { id: req.params.id, brandId: req.brand.id } });
+    if (!request) return res.status(404).json({ success: false, message: 'Not found' });
+    if (request.status !== 'content_submitted') {
+      return res.status(400).json({ success: false, message: 'No content to approve' });
+    }
+    await request.update({ status: 'content_approved', contentApprovedAt: new Date() });
+    // TODO: Release escrow payment
+    res.json({ success: true, message: 'Content approved' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to approve' });
+  }
+};
+
+// Request revision
+exports.requestRevision = async (req, res) => {
+  try {
+    const request = await CollaborationRequest.findOne({ where: { id: req.params.id, brandId: req.brand.id } });
+    if (!request) return res.status(404).json({ success: false, message: 'Not found' });
+    if (request.status !== 'content_submitted') {
+      return res.status(400).json({ success: false, message: 'Cannot request revision' });
+    }
+    if (request.revisionCount >= request.maxRevisions) {
+      return res.status(400).json({ success: false, message: 'Maximum revisions reached' });
+    }
+    await request.update({
+      status: 'revision_requested',
+      revisionNotes: req.body.notes,
+      revisionCount: request.revisionCount + 1
+    });
+    res.json({ success: true, message: 'Revision requested' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to request revision' });
+  }
+};
+
+// Complete collaboration
+exports.completeCollaboration = async (req, res) => {
+  try {
+    const request = await CollaborationRequest.findOne({ where: { id: req.params.id, brandId: req.brand.id } });
+    if (!request) return res.status(404).json({ success: false, message: 'Not found' });
+    if (request.status !== 'content_approved') {
+      return res.status(400).json({ success: false, message: 'Content must be approved first' });
+    }
+    await request.update({ status: 'completed', completedAt: new Date() });
+    await req.brand.decrement('activeCampaigns');
+    // TODO: Update creator stats, release final payment
+    res.json({ success: true, message: 'Collaboration completed' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to complete' });
+  }
+};
+
+// Get creator's received requests
+exports.getCreatorRequests = async (req, res) => {
+  try {
+    const { status, page = 1, limit = 20 } = req.query;
+    const where = { creatorId: req.creator.id };
+    if (status) where.status = status;
+
+    const requests = await CollaborationRequest.findAndCountAll({
+      where,
+      include: [{ model: Brand, as: 'brand', attributes: ['id', 'companyName', 'logo', 'tier'] }],
+      limit: parseInt(limit),
+      offset: (page - 1) * limit,
+      order: [['createdAt', 'DESC']]
+    });
+
+    res.json({
+      success: true,
+      data: {
+        requests: requests.rows,
+        pagination: { page: parseInt(page), limit: parseInt(limit), total: requests.count, totalPages: Math.ceil(requests.count / limit) }
+      }
+    });
+  } catch (error) {
+    console.error('Get creator requests error:', error);
+    res.status(500).json({ success: false, message: 'Failed to get requests' });
+  }
+};
+
+// Get creator request detail
+exports.getCreatorRequestDetail = async (req, res) => {
+  try {
+    const request = await CollaborationRequest.findOne({
+      where: { id: req.params.id, creatorId: req.creator.id },
+      include: [
+        { model: Brand, as: 'brand' },
+        { model: Contract, as: 'contract' },
+        { model: RequestNegotiation, as: 'negotiations', order: [['createdAt', 'ASC']] }
+      ]
+    });
+    if (!request) return res.status(404).json({ success: false, message: 'Not found' });
+
+    // Mark as viewed if pending
+    if (request.status === 'pending') {
+      await request.update({ status: 'viewed', viewedAt: new Date() });
+    }
+
+    res.json({ success: true, data: request });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to get request' });
+  }
+};
+
+// Accept request
+exports.acceptRequest = async (req, res) => {
+  try {
+    const request = await CollaborationRequest.findOne({ where: { id: req.params.id, creatorId: req.creator.id } });
+    if (!request) return res.status(404).json({ success: false, message: 'Not found' });
+    if (!['pending', 'viewed', 'negotiating'].includes(request.status)) {
+      return res.status(400).json({ success: false, message: 'Cannot accept at this stage' });
+    }
+    await request.update({ status: 'accepted', acceptedAt: new Date() });
+    // TODO: Generate contract, notify brand
+    res.json({ success: true, message: 'Request accepted' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to accept' });
+  }
+};
+
+// Decline request
+exports.declineRequest = async (req, res) => {
+  try {
+    const request = await CollaborationRequest.findOne({ where: { id: req.params.id, creatorId: req.creator.id } });
+    if (!request) return res.status(404).json({ success: false, message: 'Not found' });
+    if (!['pending', 'viewed'].includes(request.status)) {
+      return res.status(400).json({ success: false, message: 'Cannot decline at this stage' });
+    }
+    await request.update({ status: 'declined', declinedAt: new Date(), declineReason: req.body.reason });
+    res.json({ success: true, message: 'Request declined' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to decline' });
+  }
+};
+
+// Send counter offer
+exports.sendCounterOffer = async (req, res) => {
+  try {
+    const request = await CollaborationRequest.findOne({ where: { id: req.params.id, creatorId: req.creator.id } });
+    if (!request) return res.status(404).json({ success: false, message: 'Not found' });
+    if (request.negotiationRound >= 3) {
+      return res.status(400).json({ success: false, message: 'Maximum negotiations reached' });
+    }
+
+    await RequestNegotiation.create({
+      requestId: request.id,
+      proposedBy: 'creator',
+      proposedAmount: req.body.proposedAmount,
+      proposedServices: req.body.proposedServices,
+      message: req.body.message,
+      round: request.negotiationRound + 1
+    });
+
+    await request.update({ status: 'negotiating', negotiationRound: request.negotiationRound + 1 });
+    res.json({ success: true, message: 'Counter offer sent' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to send counter offer' });
+  }
+};
+
+// Submit content
+exports.submitContent = async (req, res) => {
+  try {
+    const request = await CollaborationRequest.findOne({ where: { id: req.params.id, creatorId: req.creator.id } });
+    if (!request) return res.status(404).json({ success: false, message: 'Not found' });
+    if (!['in_progress', 'revision_requested'].includes(request.status)) {
+      return res.status(400).json({ success: false, message: 'Cannot submit content' });
+    }
+    await request.update({
+      status: 'content_submitted',
+      submittedContentUrls: req.body.contentUrls,
+      contentSubmittedAt: new Date()
+    });
+    res.json({ success: true, message: 'Content submitted' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to submit' });
+  }
+};
+
+// Get request detail (shared)
+exports.getRequestDetail = async (req, res) => {
+  try {
+    const request = await CollaborationRequest.findByPk(req.params.id, {
+      include: [
+        { model: Creator, as: 'creator' },
+        { model: Brand, as: 'brand' },
+        { model: Contract, as: 'contract' }
+      ]
+    });
+    if (!request) return res.status(404).json({ success: false, message: 'Not found' });
+
+    // Check authorization
+    const userId = req.userId;
+    const creator = await Creator.findOne({ where: { userId } });
+    const brand = await Brand.findOne({ where: { userId } });
+
+    if ((!creator || creator.id !== request.creatorId) && (!brand || brand.id !== request.brandId)) {
+      return res.status(403).json({ success: false, message: 'Not authorized' });
+    }
+
+    res.json({ success: true, data: request });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to get request' });
+  }
+};
+
+// Get request timeline
+exports.getRequestTimeline = async (req, res) => {
+  try {
+    const request = await CollaborationRequest.findByPk(req.params.id);
+    if (!request) return res.status(404).json({ success: false, message: 'Not found' });
+
+    const timeline = [];
+    if (request.createdAt) timeline.push({ event: 'created', date: request.createdAt });
+    if (request.viewedAt) timeline.push({ event: 'viewed', date: request.viewedAt });
+    if (request.acceptedAt) timeline.push({ event: 'accepted', date: request.acceptedAt });
+    if (request.contentSubmittedAt) timeline.push({ event: 'content_submitted', date: request.contentSubmittedAt });
+    if (request.contentApprovedAt) timeline.push({ event: 'content_approved', date: request.contentApprovedAt });
+    if (request.completedAt) timeline.push({ event: 'completed', date: request.completedAt });
+
+    res.json({ success: true, data: timeline.sort((a, b) => new Date(a.date) - new Date(b.date)) });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to get timeline' });
+  }
+};
+
+// Get negotiation history
+exports.getNegotiationHistory = async (req, res) => {
+  try {
+    const negotiations = await RequestNegotiation.findAll({
+      where: { requestId: req.params.id },
+      order: [['createdAt', 'ASC']]
+    });
+    res.json({ success: true, data: negotiations });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to get history' });
+  }
+};
