@@ -27,6 +27,7 @@ exports.saveOnboardingStep = async (req, res) => {
     const stepNum = parseInt(step);
 
     console.log('Saving onboarding step:', stepNum, data);
+    
 
     switch (stepNum) {
       case 1: // Company Info
