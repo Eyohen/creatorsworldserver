@@ -7,11 +7,32 @@ exports.createRequest = async (req, res) => {
     const brand = req.brand;
     const data = req.body;
 
+    // Check if creator exists and is not suspended
+    const creator = await Creator.findByPk(data.creatorId);
+    if (!creator) {
+      return res.status(404).json({ success: false, message: 'Creator not found' });
+    }
+
+    // Check if creator is suspended
+    if (creator.suspendedUntil && new Date(creator.suspendedUntil) > new Date()) {
+      const suspendedUntil = new Date(creator.suspendedUntil);
+      return res.status(403).json({
+        success: false,
+        message: 'This creator is currently suspended and cannot accept new requests.',
+        suspended: true,
+        suspendedUntil: suspendedUntil.toISOString()
+      });
+    }
+
     // Check usage limits (optional - skip if no limit set)
     // Tier-based limits could be implemented here in the future
 
     // Generate unique reference number
     const referenceNumber = CollaborationRequest.generateReferenceNumber();
+
+    // Calculate expiration time (24 hours from now)
+    const expiresAt = new Date();
+    expiresAt.setHours(expiresAt.getHours() + 24);
 
     // Map frontend fields to model fields
     const request = await CollaborationRequest.create({
@@ -35,7 +56,9 @@ exports.createRequest = async (req, res) => {
       mentions: data.mentions || [],
       deliverables: data.selectedServices || data.deliverables || [],
       brandNotes: data.brandNotes,
-      status: 'pending'
+      status: 'pending',
+      // Set 24-hour expiration
+      expiresAt
     });
 
     // Create conversation for this request
@@ -245,14 +268,65 @@ exports.acceptRequest = async (req, res) => {
 // Decline request
 exports.declineRequest = async (req, res) => {
   try {
-    const request = await CollaborationRequest.findOne({ where: { id: req.params.id, creatorId: req.creator.id } });
+    const { reason, category } = req.body;
+    const creator = req.creator;
+
+    // Require a reason for declining
+    if (!reason || reason.trim().length < 10) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a reason for declining (at least 10 characters)'
+      });
+    }
+
+    const request = await CollaborationRequest.findOne({ where: { id: req.params.id, creatorId: creator.id } });
     if (!request) return res.status(404).json({ success: false, message: 'Not found' });
     if (!['pending', 'viewed'].includes(request.status)) {
       return res.status(400).json({ success: false, message: 'Cannot decline at this stage' });
     }
-    await request.update({ status: 'declined', declinedAt: new Date(), declineReason: req.body.reason });
-    res.json({ success: true, message: 'Request declined' });
+
+    await request.update({
+      status: 'declined',
+      respondedAt: new Date(),
+      declineReason: reason.trim(),
+      declineCategory: category || 'other'
+    });
+
+    // Increment decline count
+    const newDeclineCount = (creator.declineCount || 0) + 1;
+    const updateData = { declineCount: newDeclineCount };
+
+    // Check if creator should be suspended (after 2 declines)
+    let suspended = false;
+    if (newDeclineCount >= 2) {
+      const suspendedUntil = new Date();
+      suspendedUntil.setDate(suspendedUntil.getDate() + 3); // 3 days suspension
+
+      updateData.suspendedUntil = suspendedUntil;
+      updateData.suspensionReason = 'Declined 2 collaboration requests';
+      updateData.totalSuspensions = (creator.totalSuspensions || 0) + 1;
+      updateData.declineCount = 0; // Reset decline count after suspension
+      suspended = true;
+    }
+
+    await creator.update(updateData);
+
+    // TODO: Notify brand about the decline
+
+    res.json({
+      success: true,
+      message: suspended
+        ? 'Request declined. Your account has been suspended for 3 days due to declining 2 requests.'
+        : 'Request declined',
+      suspended,
+      suspendedUntil: suspended ? updateData.suspendedUntil : null,
+      declineCount: suspended ? 0 : newDeclineCount,
+      warning: !suspended && newDeclineCount === 1
+        ? 'Warning: Declining one more request will result in a 3-day suspension.'
+        : null
+    });
   } catch (error) {
+    console.error('Decline request error:', error);
     res.status(500).json({ success: false, message: 'Failed to decline' });
   }
 };

@@ -722,17 +722,36 @@ exports.deletePackage = async (req, res) => {
 
 exports.getMyAvailability = async (req, res) => {
   try {
-    const slots = await AvailabilitySlot.findAll({ where: { creatorId: req.creator.id } });
-    res.json({ success: true, data: { isAvailable: req.creator.isAvailable, slots } });
+    const { Op } = require('sequelize');
+    const today = new Date().toISOString().split('T')[0];
+
+    // Get all slots from today onwards
+    const slots = await AvailabilitySlot.findAll({
+      where: {
+        creatorId: req.creator.id,
+        endDate: { [Op.gte]: today }
+      },
+      order: [['startDate', 'ASC']]
+    });
+
+    res.json({
+      success: true,
+      data: {
+        isAvailable: req.creator.isAvailable,
+        leadTimeDays: req.creator.leadTimeDays || 3,
+        slots
+      }
+    });
   } catch (error) {
+    console.error('Get my availability error:', error);
     res.status(500).json({ success: false, message: 'Failed to get availability' });
   }
 };
 
 exports.updateAvailability = async (req, res) => {
   try {
-    const { isAvailable, responseTime } = req.body;
-    await req.creator.update({ isAvailable, responseTime });
+    const { isAvailable, responseTime, leadTimeDays } = req.body;
+    await req.creator.update({ isAvailable, responseTime, leadTimeDays });
     res.json({ success: true, message: 'Updated' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to update' });
@@ -741,19 +760,123 @@ exports.updateAvailability = async (req, res) => {
 
 exports.addAvailabilitySlot = async (req, res) => {
   try {
-    const slot = await AvailabilitySlot.create({ creatorId: req.creator.id, ...req.body });
+    const { startDate, endDate, isAvailable, reason, slotType } = req.body;
+
+    // Validate dates
+    if (new Date(startDate) > new Date(endDate)) {
+      return res.status(400).json({ success: false, message: 'Start date must be before end date' });
+    }
+
+    const slot = await AvailabilitySlot.create({
+      creatorId: req.creator.id,
+      startDate,
+      endDate,
+      isAvailable: isAvailable !== undefined ? isAvailable : false,
+      reason,
+      slotType: slotType || 'blocked'
+    });
+
     res.status(201).json({ success: true, data: slot });
   } catch (error) {
+    console.error('Add availability slot error:', error);
     res.status(500).json({ success: false, message: 'Failed to add slot' });
   }
 };
 
 exports.deleteAvailabilitySlot = async (req, res) => {
   try {
-    await AvailabilitySlot.destroy({ where: { id: req.params.id, creatorId: req.creator.id } });
+    const deleted = await AvailabilitySlot.destroy({ where: { id: req.params.id, creatorId: req.creator.id } });
+    if (!deleted) {
+      return res.status(404).json({ success: false, message: 'Slot not found' });
+    }
     res.json({ success: true, message: 'Deleted' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to delete' });
+  }
+};
+
+// Public endpoint - Get creator availability for brands to view
+exports.getCreatorAvailability = async (req, res) => {
+  try {
+    const { Op } = require('sequelize');
+    const { id } = req.params;
+    const { startDate, endDate } = req.query;
+
+    const creator = await Creator.findByPk(id, {
+      attributes: ['id', 'displayName', 'isAvailable', 'leadTimeDays']
+    });
+
+    if (!creator) {
+      return res.status(404).json({ success: false, message: 'Creator not found' });
+    }
+
+    const today = new Date().toISOString().split('T')[0];
+    const threeMonthsLater = new Date();
+    threeMonthsLater.setMonth(threeMonthsLater.getMonth() + 3);
+
+    // Get blocked/booked slots
+    const blockedSlots = await AvailabilitySlot.findAll({
+      where: {
+        creatorId: id,
+        endDate: { [Op.gte]: today },
+        startDate: { [Op.lte]: threeMonthsLater.toISOString().split('T')[0] }
+      },
+      attributes: ['id', 'startDate', 'endDate', 'slotType', 'isAvailable'],
+      order: [['startDate', 'ASC']]
+    });
+
+    // Check if requested date range is available
+    let isRequestedRangeAvailable = true;
+    let conflictingSlots = [];
+
+    if (startDate && endDate) {
+      const requestStart = new Date(startDate);
+      const requestEnd = new Date(endDate);
+
+      // Check lead time (minimum days before campaign can start)
+      const leadTimeDays = creator.leadTimeDays || 3;
+      const minStartDate = new Date();
+      minStartDate.setDate(minStartDate.getDate() + leadTimeDays);
+
+      if (requestStart < minStartDate) {
+        isRequestedRangeAvailable = false;
+        conflictingSlots.push({
+          reason: `Creator requires ${leadTimeDays} days lead time`
+        });
+      }
+
+      // Check for conflicts with blocked slots
+      for (const slot of blockedSlots) {
+        const slotStart = new Date(slot.startDate);
+        const slotEnd = new Date(slot.endDate);
+
+        // Check if there's overlap
+        if (requestStart <= slotEnd && requestEnd >= slotStart && !slot.isAvailable) {
+          isRequestedRangeAvailable = false;
+          conflictingSlots.push({
+            startDate: slot.startDate,
+            endDate: slot.endDate,
+            type: slot.slotType
+          });
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        creatorId: creator.id,
+        displayName: creator.displayName,
+        isGenerallyAvailable: creator.isAvailable,
+        leadTimeDays: creator.leadTimeDays || 3,
+        blockedSlots: blockedSlots.filter(s => !s.isAvailable),
+        isRequestedRangeAvailable,
+        conflictingSlots
+      }
+    });
+  } catch (error) {
+    console.error('Get creator availability error:', error);
+    res.status(500).json({ success: false, message: 'Failed to get availability' });
   }
 };
 

@@ -72,5 +72,6 @@ router.get('/:id', optionalAuth, creatorController.getCreatorPublicProfile);
 router.get('/:id/portfolio', creatorController.getCreatorPortfolio);
 router.get('/:id/reviews', creatorController.getCreatorReviews);
 router.get('/:id/rate-cards', creatorController.getCreatorRateCards);
+router.get('/:id/availability', creatorController.getCreatorAvailability);
 
 module.exports = router;

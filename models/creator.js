@@ -203,6 +203,23 @@ module.exports = (sequelize, DataTypes) => {
     restrictedCategories: {
       type: DataTypes.ARRAY(DataTypes.STRING(100)),
       defaultValue: []
+    },
+    // Suspension tracking
+    declineCount: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0
+    },
+    suspendedUntil: {
+      type: DataTypes.DATE,
+      allowNull: true
+    },
+    suspensionReason: {
+      type: DataTypes.STRING(255),
+      allowNull: true
+    },
+    totalSuspensions: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0
     }
   }, {
     tableName: 'Creators',

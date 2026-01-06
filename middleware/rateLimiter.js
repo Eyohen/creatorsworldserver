@@ -74,12 +74,15 @@ const createRateLimiter = (options = {}) => {
   return rateLimit(config);
 };
 
+// Check if we're in development mode
+const isDevelopment = process.env.NODE_ENV !== 'production';
+
 // Predefined rate limiters for different use cases
 const rateLimiters = {
-  // Very strict limit for authentication endpoints
+  // Rate limit for authentication endpoints (relaxed in development)
   auth: createRateLimiter({
-    windowMs: 60 * 60 * 1000, // 1 hour
-    max: 5, // 5 requests per hour
+    windowMs: isDevelopment ? 15 * 60 * 1000 : 60 * 60 * 1000, // 15 min in dev, 1 hour in prod
+    max: isDevelopment ? 100 : 20, // 100 in dev, 20 in prod
     keyPrefix: 'rl:auth:',
     message: {
       success: false,
