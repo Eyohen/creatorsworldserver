@@ -194,7 +194,7 @@ app.use((err, req, res, next) => {
 });
 
 // Database connection and server start
-const PORT = process.env.API_PORT || process.env.PORT || 8081;
+const PORT = process.env.API_PORT || process.env.API_PORT || 8081;
 
 const startServer = async () => {
   try {

@@ -46,18 +46,16 @@ exports.register = async (req, res) => {
     const verificationToken = crypto.randomBytes(32).toString('hex');
     const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
 
-    // In development, auto-verify users for easier testing
-    const isDev = process.env.NODE_ENV !== 'production';
-
+    // Always require email verification (even in development)
     // Create user
     const user = await User.create({
       email: normalizedEmail,
       password: hashedPassword,
       userType,
-      status: isDev ? 'active' : 'pending_verification',
-      verified: isDev ? true : false,
-      verificationToken: isDev ? null : verificationToken,
-      verificationTokenExpires: isDev ? null : verificationExpires
+      status: 'pending_verification',
+      verified: false,
+      verificationToken: verificationToken,
+      verificationTokenExpires: verificationExpires
     });
 
     // Create associated profile
