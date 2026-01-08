@@ -16,7 +16,7 @@ exports.getConversations = async (req, res) => {
       where,
       include: [
         { model: Creator, as: 'creator', attributes: ['displayName', 'avatarUrl'] },
-        { model: Brand, as: 'brand', attributes: ['companyName', 'logoUrl'] },
+        { model: Brand, as: 'brand', attributes: ['companyName', 'logo'] },
         { model: CollaborationRequest, as: 'request', attributes: ['campaignTitle', 'status'] }
       ],
       order: [['lastMessageAt', 'DESC']]

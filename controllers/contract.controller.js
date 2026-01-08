@@ -109,7 +109,7 @@ exports.getMyContracts = async (req, res) => {
       include: [
         { model: CollaborationRequest, as: 'request' },
         { model: Creator, as: 'creator', attributes: ['displayName', 'avatarUrl'] },
-        { model: Brand, as: 'brand', attributes: ['companyName', 'logoUrl'] }
+        { model: Brand, as: 'brand', attributes: ['companyName', 'logo'] }
       ],
       order: [['createdAt', 'DESC']]
     });

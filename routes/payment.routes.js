@@ -11,6 +11,9 @@ router.use(requireOnboardingComplete);
 router.post('/initialize', requireBrand, paymentController.initializePayment);
 router.get('/verify/:reference', paymentController.verifyPayment);
 
+// Escrow status (accessible by both brand and creator)
+router.get('/escrow/:requestId', paymentController.getEscrowStatus);
+
 // Creator payout routes
 router.get('/earnings', requireCreator, paymentController.getEarnings);
 router.get('/transactions', paymentController.getTransactions);

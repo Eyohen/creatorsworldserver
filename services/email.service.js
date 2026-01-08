@@ -1,193 +1,273 @@
-const nodemailer = require('nodemailer');
+// services/email.service.js - Email service using Resend
+const { Resend } = require('resend');
+const fs = require('fs').promises;
+const path = require('path');
 
-// Create transporter
-const createTransporter = () => {
-  // For development, use ethereal or console
-  if (process.env.NODE_ENV === 'development' && !process.env.SMTP_HOST) {
-    return {
-      sendMail: async (options) => {
-        console.log('=== EMAIL (DEV MODE) ===');
-        console.log('To:', options.to);
-        console.log('Subject:', options.subject);
-        console.log('Text:', options.text?.substring(0, 200));
-        console.log('========================');
-        return { messageId: 'dev-' + Date.now() };
-      }
-    };
+// Initialize Resend with API key
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+// Load and process email template
+const loadTemplate = async (templateName, variables = {}) => {
+  try {
+    const templatePath = path.join(__dirname, '..', 'templates', 'emails', `${templateName}.html`);
+    let template = await fs.readFile(templatePath, 'utf8');
+
+    // Replace template variables
+    Object.keys(variables).forEach(key => {
+      const regex = new RegExp(`{{${key}}}`, 'g');
+      template = template.replace(regex, variables[key] || '');
+    });
+
+    return template;
+  } catch (error) {
+    console.error(`Error loading template ${templateName}:`, error);
+    throw new Error(`Template ${templateName} not found`);
   }
-
-  return nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: process.env.SMTP_PORT || 587,
-    secure: process.env.SMTP_SECURE === 'true',
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS
-    }
-  });
 };
 
-const transporter = createTransporter();
+// Get base template variables
+const getBaseVariables = () => ({
+  currentYear: new Date().getFullYear(),
+  supportUrl: `${process.env.FRONTEND_URL || process.env.CLIENT_URL}/support`,
+  privacyUrl: `${process.env.FRONTEND_URL || process.env.CLIENT_URL}/privacy`,
+  termsUrl: `${process.env.FRONTEND_URL || process.env.CLIENT_URL}/terms`,
+  frontendUrl: process.env.FRONTEND_URL || process.env.CLIENT_URL
+});
 
-const sendEmail = async ({ to, subject, text, html }) => {
+// Send email using Resend
+const sendEmail = async ({ to, subject, html, text }) => {
   try {
-    const info = await transporter.sendMail({
-      from: `"CreatorsWorld" <${process.env.SMTP_FROM || 'noreply@creatorsworld.ng'}>`,
+    const result = await resend.emails.send({
+      from: `CreatorsWorld <${process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev'}>`,
       to,
       subject,
-      text,
-      html
+      html,
+      text
     });
-    console.log('Email sent:', info.messageId);
-    return info;
+
+    console.log('📧 Resend API Response:', JSON.stringify(result, null, 2));
+
+    if (result.error) {
+      console.error('❌ Resend returned an error:', result.error);
+      return { success: false, error: result.error.message };
+    }
+
+    console.log('✅ Email sent successfully to:', to);
+    return { success: true, messageId: result.data?.id };
   } catch (error) {
-    console.error('Email error:', error);
-    throw error;
+    console.error('❌ Error sending email:', error);
+    console.error('Error details:', error.response?.data || error.message);
+    return { success: false, error: error.message };
   }
 };
 
-// Email templates
-const templates = {
-  verification: (token) => ({
-    subject: 'Verify Your CreatorsWorld Account',
-    html: `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h1 style="color: #28A745;">Welcome to CreatorsWorld!</h1>
-        <p>Thank you for signing up. Please verify your email address by clicking the button below:</p>
-        <a href="${process.env.CLIENT_URL}/verify-email?token=${token}"
-           style="display: inline-block; background-color: #28A745; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; margin: 16px 0;">
-          Verify Email
-        </a>
-        <p>Or copy this link: ${process.env.CLIENT_URL}/verify-email?token=${token}</p>
-        <p>This link expires in 24 hours.</p>
-        <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;">
-        <p style="color: #666; font-size: 12px;">
-          If you didn't create an account, please ignore this email.
-        </p>
-      </div>
-    `,
-    text: `Welcome to CreatorsWorld! Verify your email: ${process.env.CLIENT_URL}/verify-email?token=${token}`
-  }),
+// Send email verification link
+const sendVerificationEmail = async (email, verificationToken) => {
+  try {
+    const frontendUrl = process.env.FRONTEND_URL || process.env.CLIENT_URL;
+    const templateVariables = {
+      ...getBaseVariables(),
+      verificationUrl: `${frontendUrl}/verify-email?token=${verificationToken}`
+    };
 
-  passwordReset: (token) => ({
-    subject: 'Reset Your CreatorsWorld Password',
-    html: `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h1 style="color: #28A745;">Password Reset Request</h1>
-        <p>You requested to reset your password. Click the button below to proceed:</p>
-        <a href="${process.env.CLIENT_URL}/reset-password?token=${token}"
-           style="display: inline-block; background-color: #28A745; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; margin: 16px 0;">
-          Reset Password
-        </a>
-        <p>Or copy this link: ${process.env.CLIENT_URL}/reset-password?token=${token}</p>
-        <p>This link expires in 1 hour.</p>
-        <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;">
-        <p style="color: #666; font-size: 12px;">
-          If you didn't request this, please ignore this email or contact support if concerned.
-        </p>
-      </div>
-    `,
-    text: `Reset your CreatorsWorld password: ${process.env.CLIENT_URL}/reset-password?token=${token}`
-  }),
+    const htmlContent = await loadTemplate('email-verification', templateVariables);
 
-  passwordChanged: () => ({
-    subject: 'Your CreatorsWorld Password Was Changed',
-    html: `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h1 style="color: #28A745;">Password Changed</h1>
-        <p>Your password was successfully changed.</p>
-        <p>If you didn't make this change, please contact our support team immediately.</p>
-        <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;">
-        <p style="color: #666; font-size: 12px;">
-          CreatorsWorld Security Team
-        </p>
-      </div>
-    `,
-    text: 'Your CreatorsWorld password was successfully changed.'
-  }),
+    const result = await sendEmail({
+      to: email,
+      subject: 'Verify Your Email - CreatorsWorld',
+      html: htmlContent,
+      text: `Welcome to CreatorsWorld! Please verify your email by visiting: ${templateVariables.verificationUrl}`
+    });
 
-  newRequest: (data) => ({
-    subject: `New Collaboration Request: ${data.campaignTitle}`,
-    html: `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h1 style="color: #28A745;">New Collaboration Request!</h1>
-        <p><strong>${data.brandName}</strong> wants to collaborate with you.</p>
-        <div style="background: #f8f9fa; padding: 16px; border-radius: 8px; margin: 16px 0;">
-          <h3>${data.campaignTitle}</h3>
-          <p>${data.campaignBrief?.substring(0, 200)}...</p>
-          <p><strong>Budget:</strong> ₦${data.budget?.toLocaleString()}</p>
-        </div>
-        <a href="${process.env.CLIENT_URL}/creator/requests/${data.requestId}"
-           style="display: inline-block; background-color: #28A745; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; margin: 16px 0;">
-          View Request
-        </a>
-      </div>
-    `,
-    text: `New collaboration request from ${data.brandName}: ${data.campaignTitle}`
-  }),
+    return result.success;
+  } catch (error) {
+    console.error('❌ Error sending verification email:', error);
+    return false;
+  }
+};
 
-  requestAccepted: (data) => ({
-    subject: `Your Request Was Accepted: ${data.campaignTitle}`,
-    html: `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h1 style="color: #28A745;">Great News!</h1>
-        <p><strong>${data.creatorName}</strong> accepted your collaboration request.</p>
-        <a href="${process.env.CLIENT_URL}/brand/requests/${data.requestId}"
-           style="display: inline-block; background-color: #28A745; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; margin: 16px 0;">
-          View Details
-        </a>
-      </div>
-    `,
-    text: `${data.creatorName} accepted your collaboration request: ${data.campaignTitle}`
-  }),
+// Send welcome email after verification
+const sendWelcomeEmail = async (email, userDetails = {}) => {
+  try {
+    const frontendUrl = process.env.FRONTEND_URL || process.env.CLIENT_URL;
+    const templateVariables = {
+      ...getBaseVariables(),
+      firstName: userDetails.firstName || 'there',
+      userName: userDetails.firstName ? `${userDetails.firstName} ${userDetails.lastName || ''}`.trim() : 'there',
+      loginUrl: `${frontendUrl}/login`,
+      dashboardUrl: `${frontendUrl}/dashboard`,
+      exploreUrl: `${frontendUrl}/explore`
+    };
 
-  paymentReceived: (data) => ({
-    subject: `Payment Received: ₦${data.amount?.toLocaleString()}`,
-    html: `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h1 style="color: #28A745;">Payment Received!</h1>
-        <p>You received a payment of <strong>₦${data.amount?.toLocaleString()}</strong> for:</p>
-        <p>${data.campaignTitle}</p>
-        <a href="${process.env.CLIENT_URL}/creator/earnings"
-           style="display: inline-block; background-color: #28A745; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; margin: 16px 0;">
-          View Earnings
-        </a>
-      </div>
-    `,
-    text: `You received ₦${data.amount?.toLocaleString()} for ${data.campaignTitle}`
-  })
+    const htmlContent = await loadTemplate('welcome-email', templateVariables);
+
+    const result = await sendEmail({
+      to: email,
+      subject: 'Welcome to CreatorsWorld!',
+      html: htmlContent,
+      text: `Welcome to CreatorsWorld! We're excited to have you on board. Start exploring at ${frontendUrl}`
+    });
+
+    return result.success;
+  } catch (error) {
+    console.error('❌ Error sending welcome email:', error);
+    return false;
+  }
+};
+
+// Send password reset email
+const sendPasswordResetEmail = async (email, resetToken) => {
+  try {
+    const frontendUrl = process.env.FRONTEND_URL || process.env.CLIENT_URL;
+    const templateVariables = {
+      ...getBaseVariables(),
+      resetUrl: `${frontendUrl}/reset-password?token=${resetToken}`
+    };
+
+    const htmlContent = await loadTemplate('password-reset', templateVariables);
+
+    const result = await sendEmail({
+      to: email,
+      subject: 'Reset Your Password - CreatorsWorld',
+      html: htmlContent,
+      text: `Reset your CreatorsWorld password by visiting: ${templateVariables.resetUrl}. This link expires in 1 hour.`
+    });
+
+    return result.success;
+  } catch (error) {
+    console.error('❌ Error sending password reset email:', error);
+    return false;
+  }
+};
+
+// Send password changed confirmation email
+const sendPasswordChangedEmail = async (email) => {
+  try {
+    const templateVariables = {
+      ...getBaseVariables()
+    };
+
+    const htmlContent = await loadTemplate('password-changed', templateVariables);
+
+    const result = await sendEmail({
+      to: email,
+      subject: 'Your Password Was Changed - CreatorsWorld',
+      html: htmlContent,
+      text: 'Your CreatorsWorld password was successfully changed. If you did not make this change, please contact support immediately.'
+    });
+
+    return result.success;
+  } catch (error) {
+    console.error('❌ Error sending password changed email:', error);
+    return false;
+  }
+};
+
+// Send new collaboration request email
+const sendNewRequestEmail = async (email, data) => {
+  try {
+    const frontendUrl = process.env.FRONTEND_URL || process.env.CLIENT_URL;
+    const templateVariables = {
+      ...getBaseVariables(),
+      brandName: data.brandName,
+      campaignTitle: data.campaignTitle,
+      campaignBrief: data.campaignBrief?.substring(0, 200) || '',
+      budget: data.budget?.toLocaleString() || '0',
+      requestUrl: `${frontendUrl}/creator/requests/${data.requestId}`
+    };
+
+    const htmlContent = await loadTemplate('new-request', templateVariables);
+
+    const result = await sendEmail({
+      to: email,
+      subject: `New Collaboration Request: ${data.campaignTitle}`,
+      html: htmlContent,
+      text: `New collaboration request from ${data.brandName}: ${data.campaignTitle}`
+    });
+
+    return result.success;
+  } catch (error) {
+    console.error('❌ Error sending new request email:', error);
+    return false;
+  }
+};
+
+// Send request accepted email
+const sendRequestAcceptedEmail = async (email, data) => {
+  try {
+    const frontendUrl = process.env.FRONTEND_URL || process.env.CLIENT_URL;
+    const templateVariables = {
+      ...getBaseVariables(),
+      creatorName: data.creatorName,
+      campaignTitle: data.campaignTitle,
+      requestUrl: `${frontendUrl}/brand/requests/${data.requestId}`
+    };
+
+    const htmlContent = await loadTemplate('request-accepted', templateVariables);
+
+    const result = await sendEmail({
+      to: email,
+      subject: `Your Request Was Accepted: ${data.campaignTitle}`,
+      html: htmlContent,
+      text: `${data.creatorName} accepted your collaboration request: ${data.campaignTitle}`
+    });
+
+    return result.success;
+  } catch (error) {
+    console.error('❌ Error sending request accepted email:', error);
+    return false;
+  }
+};
+
+// Send payment received email
+const sendPaymentReceivedEmail = async (email, data) => {
+  try {
+    const frontendUrl = process.env.FRONTEND_URL || process.env.CLIENT_URL;
+    const templateVariables = {
+      ...getBaseVariables(),
+      amount: data.amount?.toLocaleString() || '0',
+      campaignTitle: data.campaignTitle,
+      earningsUrl: `${frontendUrl}/creator/earnings`
+    };
+
+    const htmlContent = await loadTemplate('payment-received', templateVariables);
+
+    const result = await sendEmail({
+      to: email,
+      subject: `Payment Received: ₦${data.amount?.toLocaleString()}`,
+      html: htmlContent,
+      text: `You received ₦${data.amount?.toLocaleString()} for ${data.campaignTitle}`
+    });
+
+    return result.success;
+  } catch (error) {
+    console.error('❌ Error sending payment received email:', error);
+    return false;
+  }
+};
+
+// Test email configuration
+const testEmailConnection = async () => {
+  try {
+    if (!process.env.RESEND_API_KEY) {
+      throw new Error('RESEND_API_KEY is not set');
+    }
+    console.log('✅ Resend email service configured');
+    return { success: true };
+  } catch (error) {
+    console.error('❌ Email service configuration failed:', error);
+    return { success: false, error: error.message };
+  }
 };
 
 module.exports = {
   sendEmail,
-
-  sendVerificationEmail: async (email, token) => {
-    const template = templates.verification(token);
-    return sendEmail({ to: email, ...template });
-  },
-
-  sendPasswordResetEmail: async (email, token) => {
-    const template = templates.passwordReset(token);
-    return sendEmail({ to: email, ...template });
-  },
-
-  sendPasswordChangedEmail: async (email) => {
-    const template = templates.passwordChanged();
-    return sendEmail({ to: email, ...template });
-  },
-
-  sendNewRequestEmail: async (email, data) => {
-    const template = templates.newRequest(data);
-    return sendEmail({ to: email, ...template });
-  },
-
-  sendRequestAcceptedEmail: async (email, data) => {
-    const template = templates.requestAccepted(data);
-    return sendEmail({ to: email, ...template });
-  },
-
-  sendPaymentReceivedEmail: async (email, data) => {
-    const template = templates.paymentReceived(data);
-    return sendEmail({ to: email, ...template });
-  }
+  sendVerificationEmail,
+  sendWelcomeEmail,
+  sendPasswordResetEmail,
+  sendPasswordChangedEmail,
+  sendNewRequestEmail,
+  sendRequestAcceptedEmail,
+  sendPaymentReceivedEmail,
+  testEmailConnection
 };

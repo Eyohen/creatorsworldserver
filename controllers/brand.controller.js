@@ -144,7 +144,7 @@ exports.updateProfile = async (req, res) => {
 exports.updateLogo = async (req, res) => {
   try {
     const { logoUrl } = req.body;
-    await req.brand.update({ logoUrl });
+    await req.brand.update({ logo: logoUrl });
     res.json({ success: true, message: 'Logo updated' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to update logo' });

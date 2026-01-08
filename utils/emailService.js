@@ -1,85 +1,95 @@
 // utils/emailService.js - Email service facade (backward compatibility layer)
-// This file delegates to the new modular email system while maintaining the same API
+// This file delegates to the main email service in services/email.service.js
 
-const emailService = require('./email');
+const emailService = require('../services/email.service');
 
-// Log deprecation notice on first import
-console.log('📧 Email service loaded (using new modular system with retry and fallback)');
+// Log notice on first import
+console.log('📧 Email service loaded (using Resend)');
 
 /**
  * Send email verification link
- * @param {Object} user - User object containing email, first name, etc.
+ * @param {string} email - User's email address
  * @param {string} verificationToken - The token for email verification
- * @param {string} frontendUrl - The frontend URL for building the verification link
  * @returns {Promise<boolean>} - Whether the email was successfully sent
  */
-const sendVerificationEmail = async (user, verificationToken, frontendUrl) => {
-  return emailService.sendVerificationEmail(user, verificationToken, frontendUrl);
+const sendVerificationEmail = async (email, verificationToken) => {
+  return emailService.sendVerificationEmail(email, verificationToken);
 };
 
 /**
  * Send a welcome email after successful verification
- * @param {Object} user - User object containing email, first name, etc.
- * @param {string} frontendUrl - Base URL for the frontend
+ * @param {string} email - User's email address
+ * @param {Object} userDetails - User details (firstName, lastName, etc.)
  * @returns {Promise<boolean>} - Whether the email was successfully sent
  */
-const sendWelcomeEmail = async (user, frontendUrl) => {
-  return emailService.sendWelcomeEmail(user, frontendUrl);
+const sendWelcomeEmail = async (email, userDetails = {}) => {
+  return emailService.sendWelcomeEmail(email, userDetails);
 };
 
 /**
- * Send a password reset email with OTP
+ * Send a password reset email
  * @param {string} email - User's email address
- * @param {string} otp - One-time password for verification
  * @param {string} resetToken - Token for password reset
  * @returns {Promise<boolean>} - Whether the email was successfully sent
  */
-const sendResetPasswordEmail = async (email, otp, resetToken) => {
-  return emailService.sendResetPasswordEmail(email, otp, resetToken);
+const sendResetPasswordEmail = async (email, resetToken) => {
+  return emailService.sendPasswordResetEmail(email, resetToken);
 };
 
 /**
- * Send team invitation email
- * @param {Object} inviteData - Object containing invitation details
+ * Send password changed confirmation email
+ * @param {string} email - User's email address
  * @returns {Promise<boolean>} - Whether the email was successfully sent
  */
-const sendTeamInviteEmail = async (inviteData) => {
-  return emailService.sendTeamInviteEmail(inviteData);
+const sendPasswordChangedEmail = async (email) => {
+  return emailService.sendPasswordChangedEmail(email);
 };
 
 /**
- * Send payment success notification email to merchant
- * @param {Object} merchant - Merchant object with email and name
- * @param {Object} payment - Payment object with Network and Token
- * @param {string} transactionHash - Blockchain transaction hash
- * @returns {Promise<boolean>} - Whether email was successfully sent
+ * Send new collaboration request email
+ * @param {string} email - User's email address
+ * @param {Object} data - Request details
+ * @returns {Promise<boolean>} - Whether the email was successfully sent
  */
-const sendPaymentSuccessEmail = async (merchant, payment, transactionHash) => {
-  return emailService.sendPaymentSuccessEmail(merchant, payment, transactionHash);
+const sendNewRequestEmail = async (email, data) => {
+  return emailService.sendNewRequestEmail(email, data);
 };
 
 /**
- * Get fallback statistics (useful for monitoring/debugging)
- * @returns {Object} - Statistics about email provider usage
+ * Send request accepted email
+ * @param {string} email - User's email address
+ * @param {Object} data - Request details
+ * @returns {Promise<boolean>} - Whether the email was successfully sent
  */
-const getFallbackStats = () => {
-  return emailService.getFallbackStats();
+const sendRequestAcceptedEmail = async (email, data) => {
+  return emailService.sendRequestAcceptedEmail(email, data);
 };
 
 /**
- * Get full email service statistics
- * @returns {Object} - Comprehensive statistics
+ * Send payment received email
+ * @param {string} email - User's email address
+ * @param {Object} data - Payment details
+ * @returns {Promise<boolean>} - Whether the email was successfully sent
  */
-const getStats = () => {
-  return emailService.getStats();
+const sendPaymentReceivedEmail = async (email, data) => {
+  return emailService.sendPaymentReceivedEmail(email, data);
+};
+
+/**
+ * Test email configuration
+ * @returns {Promise<Object>} - Configuration status
+ */
+const testEmailConnection = async () => {
+  return emailService.testEmailConnection();
 };
 
 module.exports = {
   sendVerificationEmail,
   sendWelcomeEmail,
   sendResetPasswordEmail,
-  sendTeamInviteEmail,
-  sendPaymentSuccessEmail,
-  getFallbackStats,
-  getStats
+  sendPasswordChangedEmail,
+  sendNewRequestEmail,
+  sendRequestAcceptedEmail,
+  sendPaymentReceivedEmail,
+  testEmailConnection
 };

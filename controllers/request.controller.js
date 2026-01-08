@@ -1,5 +1,6 @@
 const db = require('../models');
-const { CollaborationRequest, RequestNegotiation, Creator, Brand, User, RateCard, Contract, Conversation } = db;
+const { CollaborationRequest, RequestNegotiation, Creator, Brand, User, RateCard, Contract, Conversation, Payment } = db;
+const paymentController = require('./payment.controller');
 
 // Create request (Brand)
 exports.createRequest = async (req, res) => {
@@ -120,7 +121,19 @@ exports.getBrandRequestDetail = async (req, res) => {
       ]
     });
     if (!request) return res.status(404).json({ success: false, message: 'Not found' });
-    res.json({ success: true, data: request });
+
+    // Parse submitted content if it exists
+    const requestData = request.toJSON();
+    if (requestData.submittedContentUrls) {
+      try {
+        requestData.submittedContent = JSON.parse(requestData.submittedContentUrls);
+      } catch (e) {
+        // If it's not JSON, it's the old format
+        requestData.submittedContent = { contentUrls: requestData.submittedContentUrls };
+      }
+    }
+
+    res.json({ success: true, data: requestData });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to get request' });
   }
@@ -142,18 +155,59 @@ exports.cancelRequest = async (req, res) => {
   }
 };
 
-// Approve content
+// Approve content and release escrow
 exports.approveContent = async (req, res) => {
   try {
-    const request = await CollaborationRequest.findOne({ where: { id: req.params.id, brandId: req.brand.id } });
-    if (!request) return res.status(404).json({ success: false, message: 'Not found' });
+    const request = await CollaborationRequest.findOne({
+      where: { id: req.params.id, brandId: req.brand.id }
+    });
+
+    if (!request) {
+      return res.status(404).json({ success: false, message: 'Not found' });
+    }
+
     if (request.status !== 'content_submitted') {
       return res.status(400).json({ success: false, message: 'No content to approve' });
     }
-    await request.update({ status: 'content_approved', contentApprovedAt: new Date() });
-    // TODO: Release escrow payment
-    res.json({ success: true, message: 'Content approved' });
+
+    // Update request status
+    await request.update({
+      status: 'content_approved',
+      contentApprovedAt: new Date()
+    });
+
+    // Find and release the escrow payment
+    const payment = await Payment.findOne({
+      where: { requestId: request.id, status: 'escrow' }
+    });
+
+    let escrowReleased = false;
+    let creatorPayout = 0;
+
+    if (payment) {
+      try {
+        await paymentController.releaseEscrow(payment.id, req.userId);
+        escrowReleased = true;
+        creatorPayout = payment.creatorPayout;
+        console.log(`✅ Content approved and escrow released for request ${request.id}`);
+      } catch (escrowError) {
+        console.error('Escrow release error:', escrowError);
+        // Content is approved but escrow release failed - this needs attention
+      }
+    }
+
+    res.json({
+      success: true,
+      message: escrowReleased
+        ? 'Content approved and payment released to creator'
+        : 'Content approved',
+      data: {
+        escrowReleased,
+        creatorPayout: escrowReleased ? creatorPayout : null
+      }
+    });
   } catch (error) {
+    console.error('Approve content error:', error);
     res.status(500).json({ success: false, message: 'Failed to approve' });
   }
 };
@@ -243,7 +297,18 @@ exports.getCreatorRequestDetail = async (req, res) => {
       await request.update({ status: 'viewed', viewedAt: new Date() });
     }
 
-    res.json({ success: true, data: request });
+    // Parse submitted content if it exists
+    const requestData = request.toJSON();
+    if (requestData.submittedContentUrls) {
+      try {
+        requestData.submittedContent = JSON.parse(requestData.submittedContentUrls);
+      } catch (e) {
+        // If it's not JSON, it's the old format
+        requestData.submittedContent = { contentUrls: requestData.submittedContentUrls };
+      }
+    }
+
+    res.json({ success: true, data: requestData });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to get request' });
   }
@@ -364,14 +429,22 @@ exports.submitContent = async (req, res) => {
     if (!['in_progress', 'revision_requested'].includes(request.status)) {
       return res.status(400).json({ success: false, message: 'Cannot submit content' });
     }
+
+    // Support both old format (contentUrls) and new format (contentLinks, notes)
+    const submittedContent = req.body.contentLinks ? {
+      contentLinks: req.body.contentLinks,
+      notes: req.body.notes || ''
+    } : req.body.contentUrls;
+
     await request.update({
       status: 'content_submitted',
-      submittedContentUrls: req.body.contentUrls,
+      submittedContentUrls: typeof submittedContent === 'object' ? JSON.stringify(submittedContent) : submittedContent,
       contentSubmittedAt: new Date()
     });
-    res.json({ success: true, message: 'Content submitted' });
+    res.json({ success: true, message: 'Content submitted successfully' });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Failed to submit' });
+    console.error('Submit content error:', error);
+    res.status(500).json({ success: false, message: 'Failed to submit content' });
   }
 };
 

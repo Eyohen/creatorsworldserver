@@ -208,7 +208,7 @@ exports.getCreatorReviews = async (req, res) => {
       where: { revieweeId: id },
       include: [
         { model: User, as: 'reviewer', attributes: ['id'] },
-        { model: db.Brand, as: 'reviewerBrand', attributes: ['companyName', 'logoUrl'] }
+        { model: db.Brand, as: 'reviewerBrand', attributes: ['companyName', 'logo'] }
       ],
       limit: parseInt(limit),
       offset: (page - 1) * limit,
@@ -951,7 +951,7 @@ exports.getDashboard = async (req, res) => {
         {
           model: db.Brand,
           as: 'brand',
-          attributes: ['id', 'companyName', 'logoUrl']
+          attributes: ['id', 'companyName', 'logo']
         }
       ],
       order: [['createdAt', 'DESC']],
