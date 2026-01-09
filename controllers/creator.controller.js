@@ -136,7 +136,7 @@ exports.getCreatorPublicProfile = async (req, res) => {
         { model: State, as: 'state', include: [{ model: Region, as: 'region' }] },
         { model: City, as: 'city' },
         { model: SocialAccount, as: 'socialAccounts', where: { isActive: true }, required: false },
-        { model: PortfolioItem, as: 'portfolio', where: { isPublic: true }, required: false, limit: 10, order: [['displayOrder', 'ASC']] },
+        { model: PortfolioItem, as: 'portfolio', where: { isPublic: true }, required: false, order: [['displayOrder', 'ASC']] },
         { model: RateCard, as: 'rateCards', where: { isActive: true }, required: false }
       ]
     });

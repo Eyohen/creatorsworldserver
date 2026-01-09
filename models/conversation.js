@@ -58,6 +58,12 @@ module.exports = (sequelize, DataTypes) => {
     isActive: {
       type: DataTypes.BOOLEAN,
       defaultValue: true
+    },
+    // Papersignal integration - stores the external room ID
+    papersignalRoomId: {
+      type: DataTypes.STRING(100),
+      allowNull: true,
+      unique: true
     }
   }, {
     tableName: 'Conversations',
@@ -66,7 +72,8 @@ module.exports = (sequelize, DataTypes) => {
       { fields: ['brandId'] },
       { fields: ['creatorId'] },
       { fields: ['requestId'] },
-      { fields: ['lastMessageAt'] }
+      { fields: ['lastMessageAt'] },
+      { fields: ['brandId', 'creatorId'], unique: true, name: 'unique_brand_creator' }
     ]
   });
 

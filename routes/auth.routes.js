@@ -1,17 +1,45 @@
 const express = require('express');
 const router = express.Router();
+const rateLimit = require('express-rate-limit');
 const authController = require('../controllers/auth.controller');
-const { verifyToken, optionalAuth } = require('../middleware/auth.middleware');
+const { verifyToken } = require('../middleware/auth.middleware');
 const { validate, validations } = require('../middleware/validate.middleware');
 
-// Public routes
+// Auth-specific rate limiting (stricter for login/register to prevent brute force)
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20, // Allow 20 attempts per 15 min
+  message: {
+    success: false,
+    message: 'Too many authentication attempts, please try again later.'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true // Don't count successful requests
+});
+
+// Lenient rate limiting for token refresh (needs to work seamlessly)
+const refreshLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 10, // Allow 10 refresh attempts per minute
+  message: {
+    success: false,
+    message: 'Too many refresh attempts, please try again later.'
+  },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+// Public routes with rate limiting
 router.post('/register',
+  authLimiter,
   validations.register,
   validate,
   authController.register
 );
 
 router.post('/login',
+  authLimiter,
   validations.login,
   validate,
   authController.login
@@ -42,8 +70,8 @@ router.post('/resend-verification',
 // Google OAuth
 router.post('/google', authController.googleAuth);
 
-// Token refresh
-router.post('/refresh-token', authController.refreshToken);
+// Token refresh - with lenient rate limiting
+router.post('/refresh-token', refreshLimiter, authController.refreshToken);
 
 // Protected routes
 router.get('/me', verifyToken, authController.getCurrentUser);

@@ -1,9 +1,70 @@
 const jwt = require('jsonwebtoken');
+const { io: SocketIOClient } = require('socket.io-client');
 const db = require('../models');
-const { User, Conversation, Message, Notification } = db;
+const { User, Creator, Brand, Conversation, Notification } = db;
+const papersignal = require('../services/papersignal.service');
 
 // Store online users
 const onlineUsers = new Map();
+
+// Store Papersignal socket connections per user
+const papersignalSockets = new Map();
+
+// Get user display info
+const getUserDisplayInfo = async (userId) => {
+  const user = await User.findByPk(userId);
+  if (!user) return null;
+
+  if (user.userType === 'creator') {
+    const creator = await Creator.findOne({ where: { userId } });
+    return {
+      id: userId,
+      displayName: creator?.displayName || 'Creator',
+      avatar: creator?.profileImage || null,
+      entityId: creator?.id,
+      entityType: 'creator'
+    };
+  } else if (user.userType === 'brand') {
+    const brand = await Brand.findOne({ where: { userId } });
+    return {
+      id: userId,
+      displayName: brand?.companyName || 'Brand',
+      avatar: brand?.logo || null,
+      entityId: brand?.id,
+      entityType: 'brand'
+    };
+  }
+  return null;
+};
+
+// Create Papersignal socket connection for a user
+const createPapersignalConnection = (userId, userInfo) => {
+  const psSocketUrl = papersignal.getSocketUrl();
+
+  const psSocket = SocketIOClient(psSocketUrl, {
+    transports: ['websocket'],
+    autoConnect: true
+  });
+
+  psSocket.on('connect', () => {
+    console.log(`Papersignal socket connected for user ${userId}`);
+    // Update presence to online
+    papersignal.updatePresence(userId, {
+      status: 'online',
+      userName: userInfo?.displayName || 'User'
+    }).catch(err => console.error('Failed to update presence:', err.message));
+  });
+
+  psSocket.on('disconnect', () => {
+    console.log(`Papersignal socket disconnected for user ${userId}`);
+  });
+
+  psSocket.on('error', (error) => {
+    console.error(`Papersignal socket error for user ${userId}:`, error);
+  });
+
+  return psSocket;
+};
 
 // Socket authentication middleware
 const socketAuthMiddleware = async (socket, next) => {
@@ -38,122 +99,226 @@ const initializeSocket = (io) => {
     const userId = socket.userId;
     console.log(`User connected: ${userId}`);
 
+    // Get user display info
+    const userInfo = await getUserDisplayInfo(userId);
+
     // Add user to online users
     onlineUsers.set(userId, socket.id);
 
     // Join user's personal room for notifications
     socket.join(`user:${userId}`);
 
+    // Create Papersignal connection for this user (if not exists)
+    if (!papersignalSockets.has(userId)) {
+      const psSocket = createPapersignalConnection(userId, userInfo);
+      papersignalSockets.set(userId, psSocket);
+
+      // Bridge Papersignal events to local socket
+      psSocket.on('receive-room-message', (data) => {
+        // Find local conversation by Papersignal room ID
+        Conversation.findOne({ where: { papersignalRoomId: data.roomId } })
+          .then(conversation => {
+            if (conversation) {
+              io.to(`conversation:${conversation.id}`).emit('new_message', {
+                id: data.message?.id,
+                conversationId: conversation.id,
+                senderId: data.message?.userId,
+                senderName: data.message?.userName,
+                content: data.message?.content,
+                messageType: data.message?.messageType || 'text',
+                reactions: data.message?.reactions || {},
+                createdAt: data.message?.createdAt
+              });
+            }
+          })
+          .catch(err => console.error('Error bridging message:', err));
+      });
+
+      psSocket.on('user-typing-in-room', (data) => {
+        Conversation.findOne({ where: { papersignalRoomId: data.roomId } })
+          .then(conversation => {
+            if (conversation) {
+              io.to(`conversation:${conversation.id}`).emit('user_typing', {
+                conversationId: conversation.id,
+                userId: data.userId,
+                userName: data.userName
+              });
+            }
+          });
+      });
+
+      psSocket.on('reaction-added', (data) => {
+        Conversation.findOne({ where: { papersignalRoomId: data.roomId } })
+          .then(conversation => {
+            if (conversation) {
+              io.to(`conversation:${conversation.id}`).emit('reaction_added', {
+                conversationId: conversation.id,
+                messageId: data.messageId,
+                userId: data.userId,
+                userName: data.userName,
+                emoji: data.emoji
+              });
+            }
+          });
+      });
+
+      psSocket.on('reaction-removed', (data) => {
+        Conversation.findOne({ where: { papersignalRoomId: data.roomId } })
+          .then(conversation => {
+            if (conversation) {
+              io.to(`conversation:${conversation.id}`).emit('reaction_removed', {
+                conversationId: conversation.id,
+                messageId: data.messageId,
+                userId: data.userId,
+                emoji: data.emoji
+              });
+            }
+          });
+      });
+
+      psSocket.on('message-updated', (data) => {
+        Conversation.findOne({ where: { papersignalRoomId: data.roomId } })
+          .then(conversation => {
+            if (conversation) {
+              io.to(`conversation:${conversation.id}`).emit('message_edited', {
+                conversationId: conversation.id,
+                messageId: data.messageId,
+                content: data.content,
+                editedAt: data.editedAt
+              });
+            }
+          });
+      });
+
+      psSocket.on('message-deleted', (data) => {
+        Conversation.findOne({ where: { papersignalRoomId: data.roomId } })
+          .then(conversation => {
+            if (conversation) {
+              io.to(`conversation:${conversation.id}`).emit('message_deleted', {
+                conversationId: conversation.id,
+                messageId: data.messageId,
+                deletedAt: data.deletedAt
+              });
+            }
+          });
+      });
+
+      psSocket.on('messages-read', (data) => {
+        Conversation.findOne({ where: { papersignalRoomId: data.roomId } })
+          .then(conversation => {
+            if (conversation) {
+              io.to(`conversation:${conversation.id}`).emit('messages_read', {
+                conversationId: conversation.id,
+                userId: data.userId,
+                lastReadAt: data.lastReadAt
+              });
+            }
+          });
+      });
+
+      psSocket.on('presence-updated', (data) => {
+        io.emit('presence_change', {
+          userId: data.userId,
+          status: data.status
+        });
+      });
+    }
+
     // Emit online status to relevant users
     socket.broadcast.emit('user_online', { userId });
+
+    // Update presence in Papersignal
+    papersignal.updatePresence(userId, {
+      status: 'online',
+      userName: userInfo?.displayName || 'User'
+    }).catch(err => console.error('Failed to update presence:', err.message));
 
     // Handle joining conversation rooms
     socket.on('join_conversation', async (conversationId) => {
       try {
-        // Verify user is part of conversation
-        const conversation = await Conversation.findByPk(conversationId);
+        const conversation = await Conversation.findByPk(conversationId, {
+          include: [
+            { model: Creator, as: 'creator', include: [{ model: User, as: 'user', attributes: ['id'] }] },
+            { model: Brand, as: 'brand', include: [{ model: User, as: 'user', attributes: ['id'] }] }
+          ]
+        });
+
         if (!conversation) {
           return socket.emit('error', { message: 'Conversation not found' });
         }
 
         // Check if user is participant
-        if (conversation.creatorId !== userId && conversation.brandId !== userId) {
+        const isCreator = conversation.creator?.user?.id === userId;
+        const isBrand = conversation.brand?.user?.id === userId;
+
+        if (!isCreator && !isBrand) {
           return socket.emit('error', { message: 'Not authorized for this conversation' });
         }
 
+        // Join local room
         socket.join(`conversation:${conversationId}`);
+
+        // Join Papersignal room if exists
+        if (conversation.papersignalRoomId) {
+          const psSocket = papersignalSockets.get(userId);
+          if (psSocket) {
+            psSocket.emit('join-room', {
+              roomId: conversation.papersignalRoomId,
+              userId,
+              userName: userInfo?.displayName || 'User'
+            });
+          }
+        }
+
         socket.emit('joined_conversation', { conversationId });
       } catch (error) {
+        console.error('Join conversation error:', error);
         socket.emit('error', { message: 'Failed to join conversation' });
       }
     });
 
     // Handle leaving conversation rooms
-    socket.on('leave_conversation', (conversationId) => {
+    socket.on('leave_conversation', async (conversationId) => {
       socket.leave(`conversation:${conversationId}`);
-    });
 
-    // Handle new message
-    socket.on('send_message', async (data) => {
-      try {
-        const { conversationId, content, attachments } = data;
-
-        // Verify user is part of conversation
-        const conversation = await Conversation.findByPk(conversationId);
-        if (!conversation) {
-          return socket.emit('error', { message: 'Conversation not found' });
-        }
-
-        if (conversation.creatorId !== userId && conversation.brandId !== userId) {
-          return socket.emit('error', { message: 'Not authorized' });
-        }
-
-        // Create message
-        const message = await Message.create({
-          conversationId,
-          senderId: userId,
-          content,
-          attachments: attachments || null,
-          isRead: false
-        });
-
-        // Update conversation
-        await conversation.update({
-          lastMessageId: message.id,
-          lastMessageAt: new Date()
-        });
-
-        // Increment unread count for other participant
-        const recipientId = conversation.creatorId === userId
-          ? conversation.brandId
-          : conversation.creatorId;
-
-        if (conversation.creatorId === userId) {
-          await conversation.increment('brandUnreadCount');
-        } else {
-          await conversation.increment('creatorUnreadCount');
-        }
-
-        // Emit to conversation room
-        io.to(`conversation:${conversationId}`).emit('new_message', {
-          ...message.toJSON(),
-          sender: { id: userId }
-        });
-
-        // Send notification to recipient if offline
-        if (!onlineUsers.has(recipientId)) {
-          // Create notification for offline user
-          await Notification.create({
-            userId: recipientId,
-            type: 'new_message',
-            title: 'New Message',
-            message: `You have a new message`,
-            data: { conversationId, messageId: message.id },
-            isRead: false
-          });
-        } else {
-          // Emit to recipient's personal room
-          io.to(`user:${recipientId}`).emit('message_received', {
-            conversationId,
-            message: message.toJSON()
+      // Leave Papersignal room if exists
+      const conversation = await Conversation.findByPk(conversationId);
+      if (conversation?.papersignalRoomId) {
+        const psSocket = papersignalSockets.get(userId);
+        if (psSocket) {
+          psSocket.emit('leave-room', {
+            roomId: conversation.papersignalRoomId,
+            userId
           });
         }
-      } catch (error) {
-        console.error('Send message error:', error);
-        socket.emit('error', { message: 'Failed to send message' });
       }
     });
 
-    // Handle typing indicator
-    socket.on('typing_start', (data) => {
+    // Handle typing indicator (via Papersignal)
+    socket.on('typing_start', async (data) => {
       const { conversationId } = data;
+
+      const conversation = await Conversation.findByPk(conversationId);
+      if (conversation?.papersignalRoomId) {
+        const psSocket = papersignalSockets.get(userId);
+        if (psSocket) {
+          psSocket.emit('typing-in-room', {
+            roomId: conversation.papersignalRoomId,
+            userId,
+            userName: userInfo?.displayName || 'User'
+          });
+        }
+      }
+
+      // Also emit locally for immediate feedback
       socket.to(`conversation:${conversationId}`).emit('user_typing', {
         userId,
+        userName: userInfo?.displayName || 'User',
         conversationId
       });
     });
 
-    socket.on('typing_stop', (data) => {
+    socket.on('typing_stop', async (data) => {
       const { conversationId } = data;
       socket.to(`conversation:${conversationId}`).emit('user_stopped_typing', {
         userId,
@@ -161,42 +326,61 @@ const initializeSocket = (io) => {
       });
     });
 
-    // Handle message read
+    // Handle message read (via REST, but can also be done via socket)
     socket.on('mark_read', async (data) => {
       try {
-        const { conversationId, messageIds } = data;
+        const { conversationId } = data;
 
-        // Update messages as read
-        await Message.update(
-          { isRead: true, readAt: new Date() },
-          { where: { id: messageIds, conversationId } }
-        );
-
-        // Reset unread count
         const conversation = await Conversation.findByPk(conversationId);
-        if (conversation) {
-          if (conversation.creatorId === userId) {
-            await conversation.update({ creatorUnreadCount: 0 });
-          } else {
-            await conversation.update({ brandUnreadCount: 0 });
-          }
+        if (!conversation) return;
+
+        // Mark as read in Papersignal
+        if (conversation.papersignalRoomId) {
+          await papersignal.markAsRead(conversation.papersignalRoomId, userId);
         }
 
-        // Notify sender that messages were read
+        // Reset local unread count
+        const creatorCheck = await Creator.findOne({ where: { userId } });
+        if (creatorCheck && creatorCheck.id === conversation.creatorId) {
+          await conversation.update({ creatorUnreadCount: 0 });
+        } else {
+          await conversation.update({ brandUnreadCount: 0 });
+        }
+
+        // Notify other participants
         socket.to(`conversation:${conversationId}`).emit('messages_read', {
           conversationId,
-          messageIds,
-          readBy: userId
+          userId,
+          readAt: new Date()
         });
       } catch (error) {
+        console.error('Mark read error:', error);
         socket.emit('error', { message: 'Failed to mark messages as read' });
       }
     });
 
     // Handle disconnect
-    socket.on('disconnect', () => {
+    socket.on('disconnect', async () => {
       console.log(`User disconnected: ${userId}`);
       onlineUsers.delete(userId);
+
+      // Update presence to offline in Papersignal
+      papersignal.updatePresence(userId, {
+        status: 'offline',
+        userName: userInfo?.displayName || 'User'
+      }).catch(err => console.error('Failed to update presence:', err.message));
+
+      // Clean up Papersignal socket after a delay (in case of reconnection)
+      setTimeout(() => {
+        if (!onlineUsers.has(userId)) {
+          const psSocket = papersignalSockets.get(userId);
+          if (psSocket) {
+            psSocket.disconnect();
+            papersignalSockets.delete(userId);
+          }
+        }
+      }, 30000); // 30 second delay before cleanup
+
       socket.broadcast.emit('user_offline', { userId });
     });
   });
@@ -219,6 +403,11 @@ const initializeSocket = (io) => {
     io.to(`user:${userId}`).emit('notification', saved.toJSON());
 
     return saved;
+  };
+
+  // Helper to check if user is online
+  io.isUserOnline = (userId) => {
+    return onlineUsers.has(userId);
   };
 
   return io;

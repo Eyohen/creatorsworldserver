@@ -30,16 +30,14 @@ const app = express();
 const httpServer = createServer(app);
 
 // Socket.io setup
-const io = new Server(httpServer, 
-  {
+const allowedOrigins = process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:5174';
+const io = new Server(httpServer, {
   cors: {
-    origin: process.env.CLIENT_URL || 'http://localhost:5174',
+    origin: allowedOrigins,
     methods: ['GET', 'POST'],
     credentials: true
   }
-}
-
-);
+});
 
 // Initialize socket handlers
 initializeSocket(io);
@@ -57,16 +55,16 @@ app.use(helmet({
 
 // CORS configuration
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:5174',
+  origin: allowedOrigins,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
-// Rate limiting
+// Rate limiting - general (auth routes have their own specific limiters)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
+  max: 200, // Increased limit for general API usage
   message: {
     success: false,
     message: 'Too many requests, please try again later.'
@@ -75,22 +73,8 @@ const limiter = rateLimit({
   legacyHeaders: false
 });
 
-// Apply rate limiting to all routes
+// Apply general rate limiting
 app.use(limiter);
-
-// Rate limit for auth routes (relaxed in development)
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: process.env.NODE_ENV === 'production' ? 20 : 200, // 200 in dev, 20 in prod
-  message: {
-    success: false,
-    message: 'Too many authentication attempts, please try again later.'
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-  // Skip rate limiting in development if desired
-  skip: () => process.env.SKIP_RATE_LIMIT === 'true'
-});
 
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
@@ -115,7 +99,7 @@ app.get('/health', (req, res) => {
 });
 
 // API Routes
-app.use('/api/auth', authLimiter, authRoutes);
+app.use('/api/auth', authRoutes);
 app.use('/api/creators', creatorRoutes);
 app.use('/api/brands', brandRoutes);
 app.use('/api/lookup', lookupRoutes);

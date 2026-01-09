@@ -116,6 +116,7 @@ exports.getBrandRequestDetail = async (req, res) => {
       where: { id: req.params.id, brandId: req.brand.id },
       include: [
         { model: Creator, as: 'creator' },
+        { model: Brand, as: 'brand' },
         { model: Contract, as: 'contract' },
         { model: RequestNegotiation, as: 'negotiations', order: [['createdAt', 'ASC']] }
       ]
@@ -286,6 +287,7 @@ exports.getCreatorRequestDetail = async (req, res) => {
       where: { id: req.params.id, creatorId: req.creator.id },
       include: [
         { model: Brand, as: 'brand' },
+        { model: Creator, as: 'creator' },
         { model: Contract, as: 'contract' },
         { model: RequestNegotiation, as: 'negotiations', order: [['createdAt', 'ASC']] }
       ]

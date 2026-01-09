@@ -105,26 +105,31 @@ const validations = {
   // Rate card validations
   rateCard: [
     body('platform')
-      .isIn(['instagram', 'tiktok', 'youtube', 'twitter', 'facebook', 'linkedin', 'other'])
+      .isIn(['instagram', 'tiktok', 'youtube', 'twitter', 'facebook', 'linkedin', 'blog', 'podcast', 'other'])
       .withMessage('Invalid platform'),
     body('contentType')
-      .isIn(['post', 'story', 'reel', 'video', 'short', 'live', 'tweet', 'thread', 'article', 'other'])
-      .withMessage('Invalid content type'),
+      .notEmpty()
+      .withMessage('Content type is required'),
     body('priceType')
-      .isIn(['fixed', 'range', 'negotiable'])
+      .optional()
+      .isIn(['fixed', 'range', 'starting_from', 'contact'])
       .withMessage('Invalid price type'),
-    body('price')
+    body('basePrice')
+      .notEmpty()
+      .isFloat({ min: 0 })
+      .withMessage('Base price is required and must be a positive number'),
+    body('maxPrice')
       .optional()
-      .isInt({ min: 0 })
-      .withMessage('Price must be a positive number'),
-    body('priceMin')
+      .isFloat({ min: 0 })
+      .withMessage('Max price must be a positive number'),
+    body('deliveryDays')
       .optional()
-      .isInt({ min: 0 })
-      .withMessage('Minimum price must be a positive number'),
-    body('priceMax')
+      .isInt({ min: 1 })
+      .withMessage('Delivery days must be at least 1'),
+    body('description')
       .optional()
-      .isInt({ min: 0 })
-      .withMessage('Maximum price must be a positive number')
+      .isString()
+      .withMessage('Description must be a string')
   ],
 
   // Portfolio item validations
@@ -132,17 +137,24 @@ const validations = {
     body('title')
       .isLength({ min: 1, max: 200 })
       .withMessage('Title is required and must be less than 200 characters'),
-    body('type')
-      .isIn(['image', 'video', 'link', 'case_study'])
-      .withMessage('Invalid portfolio item type'),
+    body('mediaType')
+      .isIn(['image', 'video', 'link'])
+      .withMessage('Invalid media type'),
     body('mediaUrl')
-      .optional()
-      .isURL()
-      .withMessage('Invalid media URL'),
+      .notEmpty()
+      .withMessage('Media URL is required'),
     body('description')
       .optional()
       .isLength({ max: 1000 })
-      .withMessage('Description must be less than 1000 characters')
+      .withMessage('Description must be less than 1000 characters'),
+    body('brandName')
+      .optional()
+      .isLength({ max: 255 })
+      .withMessage('Brand name must be less than 255 characters'),
+    body('platform')
+      .optional()
+      .isString()
+      .withMessage('Platform must be a string')
   ],
 
   // Collaboration request validations
